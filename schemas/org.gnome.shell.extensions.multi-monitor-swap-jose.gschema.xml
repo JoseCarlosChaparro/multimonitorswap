@@ -1,5 +1,5 @@
 <schemalist gettext-domain="gnome-shell-extensions">
-  <schema id="org.gnome.shell.extensions.multi-monitor-swap" path="/org/gnome/shell/extensions/multi-monitor-swap/">
+  <schema id="org.gnome.shell.extensions.multi-monitor-swap-jose" path="/org/gnome/shell/extensions/multi-monitor-swap-jose/">
     <key name="swap-up" type="as">
       <default><![CDATA[['<Super>K']]]></default>
       <summary>Swap up</summary>

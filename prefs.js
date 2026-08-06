@@ -1,118 +1,149 @@
-'use strict';
+/*
+Multi Monitor Swap preferences — port to GNOME Shell 50 (GTK4 + libadwaita).
 
-const Gtk = imports.gi.Gtk;
-const GObject = imports.gi.GObject;
-const ExtensionUtils = imports.misc.extensionUtils;
+Original work by dvrlabs (https://github.com/dvrlabs/multimonitorswap).
+*/
 
-const COLUMN_ID = 0;
-const COLUMN_DESC = 1;
-const COLUMN_KEY = 2;
-const COLUMN_MODS = 3;
+import Adw from 'gi://Adw';
+import Gtk from 'gi://Gtk';
+import Gdk from 'gi://Gdk';
+import GObject from 'gi://GObject';
 
-// eslint-disable-next-line no-unused-vars
-function init() {}
+import {ExtensionPreferences} from 'resource:///org/gnome/shell/extensions/prefs.js';
 
-// eslint-disable-next-line no-unused-vars
-function buildPrefsWidget() {
-    const settings = ExtensionUtils.getSettings('org.gnome.shell.extensions.multi-monitor-swap');
+const SHORTCUT_GROUPS = [
+    {
+        title: 'Swap windows between monitors',
+        keys: [
+            ['swap-up', 'Swap up'],
+            ['swap-down', 'Swap down'],
+            ['swap-left', 'Swap left'],
+            ['swap-right', 'Swap right'],
+        ],
+    },
+    {
+        title: 'Move focus between monitors',
+        keys: [
+            ['focus-up', 'Focus up'],
+            ['focus-down', 'Focus down'],
+            ['focus-left', 'Focus left'],
+            ['focus-right', 'Focus right'],
+        ],
+    },
+    {
+        title: 'Cycle windows on the current monitor',
+        keys: [
+            ['select-up', 'Select up'],
+            ['select-down', 'Select down'],
+        ],
+    },
+];
 
-    const prefsWidget = new Gtk.Grid({
-        margin_top: 20,
-        margin_bottom: 20,
-        margin_start: 20,
-        margin_end: 20,
-        row_spacing: 20,
-    });
+/**
+ * A preferences row that captures a single keyboard shortcut.
+ *
+ * Replaces the GTK3-era Gtk.TreeView + Gtk.CellRendererAccel combination,
+ * which is deprecated in GTK4. Key capture uses an event controller on a
+ * modal dialog, which is the supported GTK4 approach.
+ */
+const ShortcutRow = GObject.registerClass(
+class ShortcutRow extends Adw.ActionRow {
+    _init(settings, key, description) {
+        super._init({
+            title: description,
+            activatable: true,
+        });
 
-    const keybindingLabel = new Gtk.Label({
-        label: 'Keyboard shortcuts',
-        hexpand: true,
-        halign: Gtk.Align.START,
-    });
-    prefsWidget.attach(keybindingLabel, 0, 0, 1, 1);
+        this._settings = settings;
+        this._key = key;
 
-    // Setup the store
-    let store = new Gtk.ListStore();
-    store.set_column_types([
-        GObject.TYPE_STRING, // COLUMN_ID
-        GObject.TYPE_STRING, // COLUMN_DESC
-        GObject.TYPE_INT, // COLUMN_KEY
-        GObject.TYPE_INT, // COLUMN_MODS
-    ]);
+        this._label = new Gtk.ShortcutLabel({
+            valign: Gtk.Align.CENTER,
+            // Shown when no shortcut is assigned.
+            disabled_text: 'Disabled',
+        });
+        this.add_suffix(this._label);
 
-    addKeybinding(store, settings, 'swap-up', 'Swap up');
-    addKeybinding(store, settings, 'swap-down', 'Swap down');
-    addKeybinding(store, settings, 'swap-left', 'Swap left');
-    addKeybinding(store, settings, 'swap-right', 'Swap right');
+        const clearButton = new Gtk.Button({
+            icon_name: 'edit-clear-symbolic',
+            valign: Gtk.Align.CENTER,
+            has_frame: false,
+            tooltip_text: 'Clear shortcut',
+        });
+        clearButton.connect('clicked', () => this._store(null));
+        this.add_suffix(clearButton);
 
-    addKeybinding(store, settings, 'focus-up', 'Focus up');
-    addKeybinding(store, settings, 'focus-down', 'Focus down');
-    addKeybinding(store, settings, 'focus-left', 'Focus left');
-    addKeybinding(store, settings, 'focus-right', 'Focus right');
+        this._settingsChangedId = this._settings.connect(
+            `changed::${this._key}`, () => this._sync());
+        this.connect('destroy', () => {
+            this._settings.disconnect(this._settingsChangedId);
+        });
 
-    addKeybinding(store, settings, 'select-up', 'Select up');
-    addKeybinding(store, settings, 'select-down', 'Select down');
+        this.connect('activated', () => this._promptForShortcut());
+        this._sync();
+    }
 
-    let treeView = new Gtk.TreeView();
-    treeView.model = store;
-    treeView.headers_visible = false;
+    _sync() {
+        this._label.accelerator = this._settings.get_strv(this._key)[0] ?? '';
+    }
 
-    // Desc text
-    let renderer, column;
-    renderer = new Gtk.CellRendererText();
-    column = new Gtk.TreeViewColumn();
-    column.expand = true;
-    column.pack_start(renderer, true);
-    column.add_attribute(renderer, 'text', COLUMN_DESC);
-    treeView.append_column(column);
+    _store(accelerator) {
+        this._settings.set_strv(this._key, accelerator ? [accelerator] : []);
+    }
 
-    // Key binding
-    renderer = new Gtk.CellRendererAccel();
-    renderer.accel_mode = Gtk.CellRendererAccelMode.GTK;
-    renderer.editable = true;
-    column = new Gtk.TreeViewColumn();
-    column.pack_end(renderer, false);
-    column.add_attribute(renderer, 'accel-key', COLUMN_KEY);
-    column.add_attribute(renderer, 'accel-mods', COLUMN_MODS);
-    treeView.append_column(column);
-    prefsWidget.attach(treeView, 0, 1, 2, 1);
+    _promptForShortcut() {
+        const dialog = new Adw.MessageDialog({
+            heading: 'Set shortcut',
+            body: `Press the new shortcut for “${this.title}”, or Esc to cancel.`,
+            modal: true,
+            transient_for: this.get_root(),
+        });
+        dialog.add_response('cancel', 'Cancel');
 
-    // Events
-    renderer.connect('accel-edited', (_, path, key, mods, __) => {
-        let [ok, iter] = store.get_iter_from_string(path);
-        if (!ok)
-            return;
+        const controller = new Gtk.EventControllerKey();
+        controller.connect('key-pressed', (_c, keyval, keycode, state) => {
+            const mask = state & Gtk.accelerator_get_default_mod_mask();
 
-        store.set(iter, [COLUMN_KEY, COLUMN_MODS], [key, mods]);
+            if (keyval === Gdk.KEY_Escape && !mask) {
+                dialog.close();
+                return Gdk.EVENT_STOP;
+            }
 
-        let id = store.get_value(iter, COLUMN_ID);
-        let accelString = Gtk.accelerator_name(key, mods);
-        settings.set_strv(id, [accelString]);
-    });
+            // Ignore lone modifier presses; wait for a real key.
+            if (!this._isValidAccel(keyval, mask))
+                return Gdk.EVENT_STOP;
 
-    renderer.connect('accel-cleared', (_, path) => {
-        let [ok, iter] = store.get_iter_from_string(path);
-        if (!ok)
-            return;
+            this._store(Gtk.accelerator_name_with_keycode(
+                null, keyval, keycode, mask));
+            dialog.close();
+            return Gdk.EVENT_STOP;
+        });
+        dialog.add_controller(controller);
+        dialog.present();
+    }
 
-        store.set(iter, [COLUMN_KEY, COLUMN_MODS], [0, 0]);
+    _isValidAccel(keyval, mask) {
+        if (Gtk.accelerator_valid(keyval, mask))
+            return true;
 
-        let id = store.get_value(iter, COLUMN_ID);
-        settings.set_strv(id, []);
-    });
+        // Allow unmodified function/navigation keys, which accelerator_valid
+        // rejects without a modifier.
+        return mask !== 0;
+    }
+});
 
-    return prefsWidget;
-}
+export default class MultiMonitorSwapPreferences extends ExtensionPreferences {
+    fillPreferencesWindow(window) {
+        const settings = this.getSettings();
+        const page = new Adw.PreferencesPage();
 
-function addKeybinding(model, settings, id, description) {
-    // Get the current accelerator.
-    let accelerator = settings.get_strv(id)[0];
-    let key, mods;
-    if (!accelerator)
-        [key, mods] = [0, 0];
-    else
-        [, key, mods] = Gtk.accelerator_parse(accelerator);
+        for (const {title, keys} of SHORTCUT_GROUPS) {
+            const group = new Adw.PreferencesGroup({title});
+            for (const [key, description] of keys)
+                group.add(new ShortcutRow(settings, key, description));
+            page.add(group);
+        }
 
-    let row = model.insert(100);
-    model.set(row, [COLUMN_ID, COLUMN_DESC, COLUMN_KEY, COLUMN_MODS], [id, description, key, mods]);
+        window.add(page);
+    }
 }
