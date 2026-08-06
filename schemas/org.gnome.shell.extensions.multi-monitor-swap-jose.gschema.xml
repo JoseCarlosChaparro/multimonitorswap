@@ -31,12 +31,12 @@
       <description>Focus down</description>
     </key>
     <key name="focus-right" type="as">
-      <default><![CDATA[['<Super>l']]]></default>
+      <default><![CDATA[['<Super>o']]]></default>
       <summary>Focus right</summary>
       <description>Focus right</description>
     </key>
     <key name="focus-left" type="as">
-      <default><![CDATA[['<Super>h']]]></default>
+      <default><![CDATA[['<Super>y']]]></default>
       <summary>Focus left</summary>
       <description>Focus left</description>
     </key>
