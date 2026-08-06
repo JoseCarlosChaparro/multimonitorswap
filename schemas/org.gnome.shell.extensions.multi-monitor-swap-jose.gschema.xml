@@ -1,22 +1,22 @@
 <schemalist gettext-domain="gnome-shell-extensions">
   <schema id="org.gnome.shell.extensions.multi-monitor-swap-jose" path="/org/gnome/shell/extensions/multi-monitor-swap-jose/">
     <key name="swap-up" type="as">
-      <default><![CDATA[['<Super>K']]]></default>
+      <default><![CDATA[['<Super><Shift>k']]]></default>
       <summary>Swap up</summary>
       <description>Swap up</description>
     </key>
     <key name="swap-down" type="as">
-      <default><![CDATA[['<Super>J']]]></default>
+      <default><![CDATA[['<Super><Shift>j']]]></default>
       <summary>Swap down</summary>
       <description>Swap down</description>
     </key>
     <key name="swap-right" type="as">
-      <default><![CDATA[['<Super>L']]]></default>
+      <default><![CDATA[['<Super><Shift>l']]]></default>
       <summary>Swap right</summary>
       <description>Swap right</description>
     </key>
     <key name="swap-left" type="as">
-      <default><![CDATA[['<Super>H']]]></default>
+      <default><![CDATA[['<Super><Shift>h']]]></default>
       <summary>Swap left</summary>
       <description>Swap left</description>
     </key>
