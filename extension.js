@@ -1,301 +1,184 @@
-'use strict';
+/*
+Multi Monitor Swap — port to GNOME Shell 50.
 
-const { Shell, Meta } = imports.gi;
-const Main = imports.ui.main;
-const ExtensionUtils = imports.misc.extensionUtils;
-const Me = ExtensionUtils.getCurrentExtension();
+Original work by dvrlabs (https://github.com/dvrlabs/multimonitorswap).
+*/
 
-class MultiMonitorSwap {
-    constructor() {
-        this._keySwapUpId = null;
-        this._keySwapDownId = null;
-        this._keySwapRightId = null;
-        this._keySwapLeftId = null;
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+import GLib from 'gi://GLib';
 
-        this._keyFocusUpId = null;
-        this._keyFocusDownId = null;
-        this._keyFocusRightId = null;
-        this._keyFocusLeftId = null;
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-        this._keySelectUpId = null;
-        this._keySelectDownId = null;
+// Windows belonging to the shell's own GJS processes must never be swapped.
+const IGNORED_WM_CLASS = 'gjs';
 
-        this._timeOut = null;
+// A window moved across monitors is only focusable once the compositor has
+// settled the move, so re-activation is deferred by this delay.
+const REFOCUS_DELAY_MS = 75;
+
+// Keybinding table: schema key -> handler name and direction.
+// Data-driven so adding a binding never means repeating an addKeybinding block.
+const DIRECTION_BY_KEY = {
+    'swap-up': Meta.DisplayDirection.UP,
+    'swap-down': Meta.DisplayDirection.DOWN,
+    'swap-left': Meta.DisplayDirection.LEFT,
+    'swap-right': Meta.DisplayDirection.RIGHT,
+    'focus-up': Meta.DisplayDirection.UP,
+    'focus-down': Meta.DisplayDirection.DOWN,
+    'focus-left': Meta.DisplayDirection.LEFT,
+    'focus-right': Meta.DisplayDirection.RIGHT,
+};
+
+const SWAP_KEYS = ['swap-up', 'swap-down', 'swap-left', 'swap-right'];
+const FOCUS_KEYS = ['focus-up', 'focus-down', 'focus-left', 'focus-right'];
+const SELECT_KEYS = ['select-up', 'select-down'];
+
+const SELECT_OFFSET_BY_KEY = {
+    'select-up': 1,
+    'select-down': -1,
+};
+
+export default class MultiMonitorSwapExtension extends Extension {
+    enable() {
+        this._settings = this.getSettings();
+        this._boundKeys = [];
+        this._refocusTimeoutId = 0;
+
+        for (const key of SWAP_KEYS)
+            this._addKeybinding(key, () => this._swapWindow(key));
+
+        for (const key of FOCUS_KEYS)
+            this._addKeybinding(key, () => this._focusWindow(key));
+
+        for (const key of SELECT_KEYS)
+            this._addKeybinding(key, () => this._selectWindow(key));
     }
 
-    focusWindow(direction) {
-        const { focusedWindow, 
-                currentMonitor, 
-                inertWindow,
-                nextMonitor } = this._getWindowsAndMonitors(direction);
+    disable() {
+        for (const key of this._boundKeys)
+            Main.wm.removeKeybinding(key);
+        this._boundKeys = [];
 
-        if (!inertWindow) return;
+        if (this._refocusTimeoutId) {
+            GLib.Source.remove(this._refocusTimeoutId);
+            this._refocusTimeoutId = 0;
+        }
 
-        inertWindow.activate(global.get_current_time());
+        this._settings = null;
     }
 
-    swapWindow(direction) {
-        const { focusedWindow, 
-                currentMonitor, 
-                inertWindow,
-                nextMonitor } = this._getWindowsAndMonitors(direction);
-
-        if (!focusedWindow) {
-            return;
-        } 
-
-        if (!inertWindow) {
-
-            focusedWindow.move_to_monitor(nextMonitor);
-
-            this._timeOut = setTimeout(function () {
-                focusedWindow.activate(global.get_current_time());
-            }, 75);
-
-            return;
-        } 
-
-        inertWindow.move_to_monitor(currentMonitor); 
-        focusedWindow.move_to_monitor(nextMonitor);
-    }
-
-    selectWindow(direction) {
-        const {focusedWindow, currentWindows} = this._getWindowsForCurrentMonitor();
-
-        if (!focusedWindow) return;
-        if (!currentWindows) return;
-
-        let index_adjust = null;
-        if (direction === "select-up") index_adjust = 1;
-        if (direction === "select-down") index_adjust = -1;
-
-        let numWindows = currentWindows.length; 
-
-        let lastWinIdx = numWindows - 1;
-        let firstWinIdx = 0;
-
-        const isCurrentWin = (win) => win.get_id() === focusedWindow.get_id();
-        const currWinIdx = currentWindows.findIndex(isCurrentWin)
-
-        let indexNow = currWinIdx + index_adjust;
-
-        if (indexNow > lastWinIdx) indexNow = firstWinIdx;
-        if (indexNow < firstWinIdx) indexNow = lastWinIdx;
-
-        currentWindows[indexNow].activate(global.get_current_time());
-
-    }
-
-
-    _getWindowsAndMonitors(direction) {
-        const workspace = global.workspace_manager.get_active_workspace();
-        const windows = workspace.list_windows();
-        let focusedWindow = null;
-        let inertWindow = null;
-
-        focusedWindow = windows.filter(w => 
-            w.has_focus() === true && 
-            w.is_hidden() === false && 
-            w.get_wm_class() !== "gjs")
-            [0];
-
-        let currentMonitor = focusedWindow.get_monitor();
-
-        let nextMonitor = global.display.get_monitor_neighbor_index(
-            currentMonitor, this._getEnumDir(direction)
+    _addKeybinding(key, handler) {
+        Main.wm.addKeybinding(
+            key,
+            this._settings,
+            Meta.KeyBindingFlags.NONE,
+            Shell.ActionMode.ALL,
+            handler
         );
+        this._boundKeys.push(key);
+    }
 
+    /** Windows on the active workspace that are valid swap/focus targets. */
+    _listEligibleWindows() {
+        const workspace = global.workspace_manager.get_active_workspace();
+        return workspace.list_windows().filter(w =>
+            !w.is_hidden() && w.get_wm_class() !== IGNORED_WM_CLASS);
+    }
 
-        let nextWindows = windows.filter(w => 
-            w.get_monitor() === nextMonitor && 
-            w.is_hidden() === false && 
-            w.get_wm_class() !== "gjs");
+    _getFocusedWindow(windows) {
+        return windows.find(w => w.has_focus()) ?? null;
+    }
 
-        inertWindow = global.display.sort_windows_by_stacking(
-            nextWindows
-        )[nextWindows.length-1];
+    /**
+     * Resolves the focused window plus the topmost window on the neighbouring
+     * monitor in the given direction. Returns null when there is nothing
+     * focused or no neighbouring monitor.
+     */
+    _getSwapContext(key) {
+        const windows = this._listEligibleWindows();
+        const focusedWindow = this._getFocusedWindow(windows);
+        if (!focusedWindow)
+            return null;
+
+        const currentMonitor = focusedWindow.get_monitor();
+        const nextMonitor = global.display.get_monitor_neighbor_index(
+            currentMonitor, DIRECTION_BY_KEY[key]);
+
+        // -1 means there is no monitor in that direction.
+        if (nextMonitor < 0)
+            return null;
+
+        const nextWindows = windows.filter(w => w.get_monitor() === nextMonitor);
+        const stacked = global.display.sort_windows_by_stacking(nextWindows);
+        const inertWindow = stacked.length ? stacked[stacked.length - 1] : null;
 
         return {focusedWindow, currentMonitor, inertWindow, nextMonitor};
     }
 
-    _getWindowsForCurrentMonitor() {
-        const workspace = global.workspace_manager.get_active_workspace();
-        const windows = workspace.list_windows();
-        let focusedWindow = null;
-        let currentWindows = null;
+    _focusWindow(key) {
+        const context = this._getSwapContext(key);
+        if (!context?.inertWindow)
+            return;
 
-        focusedWindow = windows.filter(w => 
-            w.has_focus() === true && 
-            w.is_hidden() === false && 
-            w.get_wm_class() !== "gjs")
-            [0];
-
-        let currentMonitor = focusedWindow.get_monitor();
-
-        currentWindows = windows.filter(w => 
-            w.get_monitor() === currentMonitor && 
-            w.is_hidden() === false && 
-            w.get_wm_class() !== "gjs");
-
-        return {focusedWindow, currentWindows};
+        context.inertWindow.activate(global.get_current_time());
     }
 
-    _getEnumDir(direction){
-        //'get_monitor_neighbor_index' expects a DisplayDirection enum.
-        if (['swap-up','focus-up'].includes(direction)) direction = Meta.DisplayDirection.UP;
-        if (['swap-down','focus-down'].includes(direction)) direction = Meta.DisplayDirection.DOWN;
-        if (['swap-right','focus-right'].includes(direction)) direction = Meta.DisplayDirection.RIGHT;
-        if (['swap-left', 'focus-left'].includes(direction)) direction = Meta.DisplayDirection.LEFT;
+    _swapWindow(key) {
+        const context = this._getSwapContext(key);
+        if (!context)
+            return;
 
-        return direction
-    }
+        const {focusedWindow, currentMonitor, inertWindow, nextMonitor} = context;
 
-    _bindShortcut() {
-        this._keySwapUpId = 'swap-up';
-        this._keySwapDownId = 'swap-down';
-        this._keySwapRightId = 'swap-right';
-        this._keySwapLeftId = 'swap-left';
-
-        Main.wm.addKeybinding(
-            this._keySwapUpId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.swapWindow(this._keySwapUpId)
-        );
-        Main.wm.addKeybinding(
-            this._keySwapDownId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.swapWindow(this._keySwapDownId)
-        );
-        Main.wm.addKeybinding(
-            this._keySwapRightId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.swapWindow(this._keySwapRightId)
-        );
-        Main.wm.addKeybinding(
-            this._keySwapLeftId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.swapWindow(this._keySwapLeftId)
-        );
-
-        this._keyFocusUpId = 'focus-up';
-        this._keyFocusDownId = 'focus-down';
-        this._keyFocusRightId = 'focus-right';
-        this._keyFocusLeftId = 'focus-left';
-
-        Main.wm.addKeybinding(
-            this._keyFocusUpId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.focusWindow(this._keyFocusUpId)
-        );
-        Main.wm.addKeybinding(
-            this._keyFocusDownId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.focusWindow(this._keyFocusDownId)
-        );
-        Main.wm.addKeybinding(
-            this._keyFocusRightId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.focusWindow(this._keyFocusRightId)
-        );
-        Main.wm.addKeybinding(
-            this._keyFocusLeftId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.focusWindow(this._keyFocusLeftId)
-        );
-
-
-        this._keySelectUpId = 'select-up';
-        this._keySelectDownId = 'select-down';
-
-        Main.wm.addKeybinding(
-            this._keySelectUpId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.selectWindow(this._keySelectUpId)
-        );
-        Main.wm.addKeybinding(
-            this._keySelectDownId,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.ALL,
-            () => this.selectWindow(this._keySelectDownId)
-        );
-    }
-
-    _unbindShortcut() {
-        if (this._keySwapUpId !== null)
-            Main.wm.removeKeybinding(this._keySwapUpId);
-        if (this._keySwapDownId !== null)
-            Main.wm.removeKeybinding(this._keySwapDownId);
-        if (this._keySwapRightId !== null)
-            Main.wm.removeKeybinding(this._keySwapRightId);
-        if (this._keySwapLeftId !== null)
-            Main.wm.removeKeybinding(this._keySwapLeftId);
-
-        if (this._keyFocusUpId !== null)
-            Main.wm.removeKeybinding(this._keyFocusUpId);
-        if (this._keyFocusDownId !== null)
-            Main.wm.removeKeybinding(this._keyFocusDownId);
-        if (this._keyFocusRightId !== null)
-            Main.wm.removeKeybinding(this._keyFocusRightId);
-        if (this._keyFocusLeftId !== null)
-            Main.wm.removeKeybinding(this._keyFocusLeftId);
-
-        if (this._keySelectUpId !== null)
-            Main.wm.removeKeybinding(this._keySelectUpId);
-        if (this._keySelectDownId !== null)
-            Main.wm.removeKeybinding(this._keySelectDownId);
-
-        this._keySwapUpId = null;
-        this._keySwapDownId = null;
-        this._keySwapRightId = null;
-        this._keySwapLeftId = null;
-
-        this._keyFocusUpId = null;
-        this._keyFocusDownId = null;
-        this._keyFocusRightId = null;
-        this._keyFocusLeftId = null;
-
-        this._keySelectUpId = null;
-        this._keySelectDownId = null;
-
-    }
-
-    enable() {
-        this._settings = ExtensionUtils.getSettings('org.gnome.shell.extensions.multi-monitor-swap');
-        this._bindShortcut();
-    }
-
-    disable() {
-        this._unbindShortcut();
-        this._settings = null;
-
-        if (this._timeOut) {
-            clearTimeout(this._timeOut);
-            this._timeOut = null;
+        if (!inertWindow) {
+            // Nothing to trade places with: just move and re-focus once the
+            // compositor has applied the move.
+            focusedWindow.move_to_monitor(nextMonitor);
+            this._queueRefocus(focusedWindow);
+            return;
         }
 
+        inertWindow.move_to_monitor(currentMonitor);
+        focusedWindow.move_to_monitor(nextMonitor);
     }
-}
 
-// eslint-disable-next-line no-unused-vars
-function init() {
-    return new MultiMonitorSwap();
+    _queueRefocus(window) {
+        if (this._refocusTimeoutId)
+            GLib.Source.remove(this._refocusTimeoutId);
+
+        this._refocusTimeoutId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, REFOCUS_DELAY_MS, () => {
+                this._refocusTimeoutId = 0;
+                window.activate(global.get_current_time());
+                return GLib.SOURCE_REMOVE;
+            });
+    }
+
+    /** Cycles focus through the windows already on the current monitor. */
+    _selectWindow(key) {
+        const windows = this._listEligibleWindows();
+        const focusedWindow = this._getFocusedWindow(windows);
+        if (!focusedWindow)
+            return;
+
+        const currentMonitor = focusedWindow.get_monitor();
+        const currentWindows = windows.filter(
+            w => w.get_monitor() === currentMonitor);
+        if (currentWindows.length < 2)
+            return;
+
+        const currentIndex = currentWindows.findIndex(
+            w => w.get_id() === focusedWindow.get_id());
+        if (currentIndex < 0)
+            return;
+
+        const offset = SELECT_OFFSET_BY_KEY[key];
+        const count = currentWindows.length;
+        // Wrap around in both directions.
+        const nextIndex = (currentIndex + offset + count) % count;
+
+        currentWindows[nextIndex].activate(global.get_current_time());
+    }
 }

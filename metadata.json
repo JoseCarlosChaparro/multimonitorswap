@@ -3,12 +3,15 @@
   "description": "Swap windows between monitors.",
   "name": "Multi Monitor Swap ",
   "shell-version": [
-    "40",
-    "41",
-    "42",
-    "43"
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
   ],
   "url": "https://github.com/dvrlabs/multimonitorswap",
   "uuid": "multimonitorswap@dvrlabs.tv",
-  "version": 9
+  "version": 9,
+  "settings-schema": "org.gnome.shell.extensions.multi-monitor-swap"
 }
