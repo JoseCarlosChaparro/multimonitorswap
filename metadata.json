@@ -1,5 +1,5 @@
 {
-  "description": "Swap windows between monitors.",
+  "description": "Swap windows between monitors with keyboard shortcuts.\n\n• Swap the focused window with the window on the monitor above/below/left/right\n• Move keyboard focus between monitors without touching the mouse\n• Cycle through windows on the current monitor\n\nAll shortcuts are configurable in Settings.\n\nFork of dvrlabs/multimonitorswap ported to GNOME Shell 45+ (ESM), with fixes for silently-failing swap shortcuts.",
   "name": "Multi Monitor Swap (Jose fork)",
   "shell-version": [
     "50"
